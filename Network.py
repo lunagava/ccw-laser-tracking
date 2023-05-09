@@ -19,7 +19,7 @@ window, pixels = create_sdl_surface(640 * 3, 480)
 kernel_size = (5,5)
 CameraKernel=T.GaussianBlur(kernel_size, sigma=(0.5, 0.5))
 kernel_size = (25,25)
-LaserKernel=T.GaussianBlur(kernel_size, sigma=(15., 15.))
+LaserKernel=T.GaussianBlur(kernel_size)
 
 
 # Create horizontal and vertical edge detectors
