@@ -10,6 +10,7 @@
 import math
 import serial
 import time
+import torch
 
 
 class _Getch:
@@ -87,7 +88,7 @@ class Laser:
 
     def move(self, x, y):
         self.send(f"!L{x:03X}{y:03X}")
-        return [x,y]
+        return torch.tensor([x,y])
 
     def on(self):
         self.send("!L=+")
