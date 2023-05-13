@@ -59,7 +59,7 @@ public:
 
         raw_image = cv::Mat::zeros(480,640, CV_8U);
 
-        freq = rf.check("f", Value(50)).asInt32();
+        freq = rf.check("f", Value(200)).asInt32();
 
         //start the asynchronous and synchronous threads
         return Thread::start();
