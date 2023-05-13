@@ -1,5 +1,7 @@
 # ccw-laser-tracking
 
+TO-DO = instructions to download required libraries
+
 - yarpserver
 - docker start gen3_host
 - docker exec -it gen3_host bash
