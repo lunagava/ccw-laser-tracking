@@ -1,0 +1,373 @@
+/* BSD 3-Clause License
+
+Copyright (c) 2021, Event Driven Perception for Robotics
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
+
+#pragma once
+
+#include <array>
+#include <iostream>
+#include <iomanip>
+#include <map>
+#include <string>
+#include <tuple>
+#include <vector>
+#include <deque>
+#include <thread>
+#include <chrono>
+#include <mutex>
+#include <string>
+#include <opencv2/opencv.hpp>
+#include <fstream>
+
+namespace hpecore {
+
+typedef struct pixel_event
+{
+    int p:1;
+    int x:10;
+    int _f1:1;
+    int y:9;
+    int _f:11;
+    int stamp:32;
+} pixel_event;
+
+typedef struct point_flow
+{
+    float udot;
+    float vdot;
+} point_flow;
+
+struct joint {
+    float u;
+    float v;
+    joint operator * (float k) {
+        return {u*k, v*k};
+    }
+    joint& operator += (const joint k) {
+        u+=k.u; v+= k.v;
+        return *this;
+    }
+    joint operator + (const joint k) {
+        return {u+k.u, v+k.v};
+    } 
+};
+using jDot = joint;
+
+typedef std::array<joint, 13> skeleton13;
+typedef std::array<bool, 13>  skeleton13_b;
+typedef std::array<cv::Point, 13> skeleton13_v;
+typedef std::array<jDot, 13> skeleton13_vel;
+
+struct stampedPose {
+    double timestamp;
+    double delay;
+    skeleton13 pose;
+};
+
+enum jointName {head, shoulderR, shoulderL, elbowR, elbowL,
+             hipL, hipR, handR, handL, kneeR, kneeL, footR, footL};
+static const std::vector<jointName> jointNames = {head, shoulderR, shoulderL, elbowR, elbowL,
+                        hipL, hipR, handR, handL, kneeR, kneeL, footR, footL};
+
+typedef std::array<joint, 18> skeleton18;
+typedef std::array<joint, 25> skeleton25;
+
+
+inline skeleton13_b jointTest(skeleton13 pose)
+{
+    int i = 0;
+    skeleton13_b result;
+    for(auto &j : pose) 
+    {
+        if(j.u > 0.0f || j.v > 0.0f)
+            result[i++] = true;
+        else
+            result[i++] = false;
+    }
+    return result;
+}
+
+inline skeleton13_v jointConvert(skeleton13 pose)
+{
+    skeleton13_v result;
+    for(size_t i = 0; i < pose.size(); i++) 
+    {
+        result[i].x = pose[i].u;
+        result[i].y = pose[i].v;
+    }
+    return result;
+}
+
+template <typename T>
+inline void print_skeleton(const T &s) 
+{
+    for(auto &t : s)
+        std::cout << t.u << " " << t.v << std::endl;
+}
+
+inline bool poseNonZero(skeleton13 pose)
+{
+    bool nonZero = false;
+    for (int j = 0; j < 13; j++)
+    {
+        if(pose[j].u || pose[j].v)
+        {
+            nonZero = true;
+            break;
+        }
+    }
+    return nonZero;
+}
+
+template <typename T>
+inline void getEventsUV(std::deque<T> &input, std::deque<joint> &output, std::deque<double> &ts, double scaler) 
+{
+    for (auto &q : input)
+    {
+        joint j = {q.x, q.y};
+        output.push_back(j);
+        ts.push_back(q.stamp*scaler);
+    }
+}
+
+inline jointName str2enum(const std::string& str)
+{
+    if(str == "head") return head;
+    else if(str == "shoulderR") return shoulderR;
+    else if(str == "shoulderL") return shoulderL;
+    else if(str == "elbowR") return elbowR;
+    else if(str == "elbowL") return elbowL;
+    else if(str == "hipL") return hipL;
+    else if(str == "hipR") return hipR;
+    else if(str == "handR") return handR;
+    else if(str == "handL") return handL;
+    else if(str == "kneeR") return kneeR;
+    else if(str == "kneeL") return kneeL;
+    else if(str == "footR") return footR;
+    else if(str == "footL") return footL;
+}
+
+// mapping between DHP19 joints and indices of joints generated by openpose using the COCO body model
+namespace coco {
+enum jointName {head=0, shoulderR=2, shoulderL=5, elbowR=3, elbowL=6, hipL=11, hipR=8,
+        handR=4, handL=7, kneeR=9, kneeL=12, footR=10, footL=13};
+}
+
+namespace body {
+enum jointName {head=0, shoulderR=2, shoulderL=5, elbowR=3, elbowL=6, hipL=12, hipR=9,
+        handR=4, handL=7, kneeR=10, kneeL=13, footR=11, footL=14};
+}
+
+inline skeleton13 coco18_to_dhp19(const skeleton18 skeleton_in)
+{
+    skeleton13 skeleton_out;
+    skeleton_out[head] = skeleton_in[coco::head];
+    skeleton_out[shoulderR] = skeleton_in[coco::shoulderR];
+    skeleton_out[shoulderL] = skeleton_in[coco::shoulderL];
+    skeleton_out[elbowL] = skeleton_in[coco::elbowL];
+    skeleton_out[elbowR] = skeleton_in[coco::elbowR];
+    skeleton_out[hipL] = skeleton_in[coco::hipL];
+    skeleton_out[hipR] = skeleton_in[coco::hipR];
+    skeleton_out[handL] = skeleton_in[coco::handL];
+    skeleton_out[handR] = skeleton_in[coco::handR];
+    skeleton_out[kneeL] = skeleton_in[coco::kneeL];
+    skeleton_out[kneeR] = skeleton_in[coco::kneeR];
+    skeleton_out[footL] = skeleton_in[coco::footL];
+    skeleton_out[footR] = skeleton_in[coco::footR];
+    return skeleton_out;
+}
+
+inline skeleton13 body25_to_dhp19(const skeleton25 skeleton_in)
+{
+    skeleton13 skeleton_out;
+    skeleton_out[head] = skeleton_in[body::head];
+    skeleton_out[shoulderR] = skeleton_in[body::shoulderR];
+    skeleton_out[shoulderL] = skeleton_in[body::shoulderL];
+    skeleton_out[elbowL] = skeleton_in[body::elbowL];
+    skeleton_out[elbowR] = skeleton_in[body::elbowR];
+    skeleton_out[hipL] = skeleton_in[body::hipL];
+    skeleton_out[hipR] = skeleton_in[body::hipR];
+    skeleton_out[handL] = skeleton_in[body::handL];
+    skeleton_out[handR] = skeleton_in[body::handR];
+    skeleton_out[kneeL] = skeleton_in[body::kneeL];
+    skeleton_out[kneeR] = skeleton_in[body::kneeR];
+    skeleton_out[footL] = skeleton_in[body::footL];
+    skeleton_out[footR] = skeleton_in[body::footR];
+    return skeleton_out;
+}
+
+inline void drawSkeleton(cv::Mat &image, const skeleton13 pose, std::array<int, 3> color = {0, 0, 200}, int th =1) 
+{
+    skeleton13_b jb = jointTest(pose);
+    skeleton13_v jv = jointConvert(pose);
+    auto colorS = CV_RGB(color[0], color[1], color[2]);
+
+    // plot detected joints
+    for (size_t i = 1; i < pose.size(); i++)
+        if (jb[i])
+            cv::drawMarker(image, jv[i], colorS, cv::MARKER_TILTED_CROSS, 8);
+
+    // if(jb[head]) cv::circle(image, jv[head]+ cv::Point(0, 10), 10, colorS, th);
+    // if(jb[head] && jb[shoulderL] && jb[shoulderR]) cv::line(image, (jv[shoulderL] + jv[shoulderR])/2, jv[head] + cv::Point(0, 20), colorS, th);
+    if(jb[head] && jb[shoulderL] && jb[shoulderR])
+    {
+        int dist = cv::norm(jv[shoulderL]-jv[hipR])/6;
+        cv::circle(image, jv[head] + cv::Point(0, 0.0), dist, colorS, th);
+        cv::line(image, (jv[shoulderL] + jv[shoulderR])/2, jv[head] + cv::Point(0, dist), colorS, th);
+    } 
+    if(jb[shoulderL] && jb[shoulderR]) cv::line(image, jv[shoulderL], jv[shoulderR], colorS, th);
+    if(jb[shoulderL] && jb[elbowL]) cv::line(image, jv[shoulderL], jv[elbowL], colorS, th);
+    if(jb[shoulderR] && jb[elbowR]) cv::line(image, jv[shoulderR], jv[elbowR], colorS, th);
+    if(jb[elbowL] && jb[handL]) cv::line(image, jv[elbowL], jv[handL], colorS, th);
+    if(jb[elbowR] && jb[handR]) cv::line(image, jv[elbowR], jv[handR], colorS, th);
+    if(jb[shoulderL] && jb[hipL]) cv::line(image, jv[shoulderL], jv[hipL], colorS, th);
+    if(jb[shoulderR] && jb[hipR]) cv::line(image, jv[shoulderR], jv[hipR], colorS, th);
+    if(jb[hipL] && jb[hipR]) cv::line(image, jv[hipL], jv[hipR], colorS, th);
+    if(jb[hipL] && jb[kneeL]) cv::line(image, jv[hipL], jv[kneeL], colorS, th);
+    if(jb[hipR] && jb[kneeR]) cv::line(image, jv[hipR], jv[kneeR], colorS, th);
+    if(jb[kneeL] && jb[footL]) cv::line(image, jv[kneeL], jv[footL], colorS, th);
+    if(jb[kneeR] && jb[footR]) cv::line(image, jv[kneeR], jv[footR], colorS, th);
+}
+
+
+inline void drawVel(cv::Mat &image, const skeleton13 pose, const skeleton13_vel vel, std::array<int, 3> color = {0, 0, 200}, int th =1) 
+{
+    skeleton13_b jb = jointTest(pose);
+    skeleton13_v jv = jointConvert(pose);
+    skeleton13_v jvel = jointConvert(vel);
+    auto colorS = CV_RGB(color[0], color[1], color[2]);
+
+    // plot detected joints
+    for (size_t i = 0; i < pose.size(); i++)
+        if (jb[i])
+            cv::arrowedLine(image, jv[i], jv[i]+jvel[i], colorS, th);
+
+}
+
+template <typename T>
+inline skeleton13 extractSkeletonFromYARP(const T &gt_container)
+{
+    skeleton13 result;
+    T *gt = gt_container.get(1).asList();
+    if(!gt || gt->size() != result.size()*2) return result;
+    for (auto i = 0; i < result.size(); i++) {
+        joint &j = result[i];
+        j.u = gt->get(i*2).asFloat64();
+        j.v = gt->get(i*2+1).asFloat64();
+    }
+    return result;
+}
+
+class writer {
+private:
+
+    std::ofstream fileio;
+    std::thread th;
+    bool stop{false};
+
+    std::mutex m;
+    std::deque<stampedPose> buffers[2];
+    int b_sel{0};
+    static constexpr void switch_buffer(int &buf_i) {buf_i = (buf_i + 1) % 2;};
+
+    void run()
+    {
+        while(!stop || buffers[0].size() || buffers[1].size()) {
+
+            std::deque<stampedPose> &c_buf = buffers[b_sel];
+            m.lock();
+            int n_data = buffers[b_sel].size();
+            switch_buffer(b_sel);
+            m.unlock();
+
+            if(n_data) {
+            
+                // write the full_buffer and clear it
+                for(auto &i : c_buf) 
+                {
+                    fileio << std::setprecision(5) << std::fixed;
+                    fileio << i.timestamp << " " << std::scientific << i.delay << std::fixed;
+                    for(auto &j : i.pose)
+                        fileio << std::setprecision(2) << " " << j.u << " " << j.v;
+                    fileio << std::endl;
+                }
+                c_buf.clear();
+
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+
+        }
+    }
+
+public:
+
+    bool open(std::string pathname)
+    {
+        //open the file output
+        fileio.open(pathname);
+        if(!fileio.is_open()) 
+            return false;
+        fileio << std::fixed;
+
+        //start the thread
+        th = std::thread( [this]{this->run();} );
+        return true;
+    }
+
+    void write(stampedPose data_point)
+    {
+        m.lock();
+        buffers[b_sel].push_back(data_point);
+        m.unlock();
+    }
+
+    void close()
+    {
+        stop = true;
+        if(fileio.is_open()) {
+            std::cout << "hpecore::writer: please wait...";
+            th.join();
+            fileio.close();
+            std::cout << "complete." << std::endl;
+        }
+    }
+};
+
+
+inline void drawProgressBar(cv::Mat &image, double percentage)
+{
+    int width = image.cols;
+    cv::Rect box_border(width * 0.05, width * 0.05, width * 0.9, width * 0.05);
+    cv::Rect box_prog(width * 0.05, width * 0.05, width * 0.9 * percentage, width * 0.05);
+    cv::rectangle(image, box_prog, CV_RGB(255, 255, 255), cv::FILLED);
+    cv::rectangle(image, box_border, CV_RGB(0, 0, 0), 2);
+}
+
+}
